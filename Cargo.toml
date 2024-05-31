@@ -14,9 +14,13 @@ features = [
 	"Win32_Foundation",
 	"Win32_UI_WindowsAndMessaging",
 	"Win32_UI_Input_KeyboardAndMouse",
+	"Win32_UI_Controls",
 	"Win32_Graphics_Gdi",
 	"Win32_System_LibraryLoader",
 	"Win32_System_Threading",
 	"Win32_System_Environment",
 	"Win32_Globalization"
 ]
+
+[build-dependencies]
+embed-manifest = "1.4.0"

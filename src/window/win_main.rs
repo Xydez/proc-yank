@@ -1,52 +1,32 @@
 use windows::{
     core::{w, HSTRING, PCWSTR},
     Win32::{
-        Foundation::{GetLastError, HMODULE, HWND, LPARAM, LRESULT, MAX_PATH, WPARAM},
-        Graphics::Gdi::{UpdateWindow, COLOR_WINDOW, HBRUSH},
-        System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW},
-        UI::WindowsAndMessaging::{
-            CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GetMessageW,
-            LoadCursorW, LoadIconW, MessageBoxW, PostQuitMessage, RegisterClassExW, ShowWindow,
-            TranslateMessage, CW_USEDEFAULT, IDC_ARROW, IDI_APPLICATION, MB_ICONEXCLAMATION, MB_OK,
-            MSG, SW_SHOW, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WNDCLASSEXW,
-            WS_EX_WINDOWEDGE, WS_OVERLAPPEDWINDOW,
+        Foundation::{GetLastError, BOOL, HMODULE, HWND, LPARAM, LRESULT, TRUE, WPARAM},
+        Graphics::Gdi::{
+            CreateFontIndirectW, DeleteObject, UpdateWindow, COLOR_WINDOW, HBRUSH, HFONT,
+        },
+        UI::{
+            Controls::{InitCommonControlsEx, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX},
+            WindowsAndMessaging::{
+                AppendMenuW, CreateMenu, CreateWindowExW, DefWindowProcW, DestroyWindow,
+                DispatchMessageW, EnumChildWindows, GetMessageW, LoadCursorW, LoadIconW,
+                MessageBoxW, PostQuitMessage, RegisterClassExW, SendMessageW, SetMenu, ShowWindow,
+                TranslateMessage, CW_USEDEFAULT, IDC_ARROW, IDI_APPLICATION, MB_ICONEXCLAMATION,
+                MB_OK, MF_POPUP, MF_STRING, MSG, SW_SHOW, WINDOW_STYLE, WM_CLOSE, WM_COMMAND,
+                WM_CREATE, WM_DESTROY, WM_SETFONT, WNDCLASSEXW, WS_EX_WINDOWEDGE,
+                WS_OVERLAPPEDWINDOW, WS_THICKFRAME,
+            },
         },
     },
 };
 
 use crate::{
-    dialog,
-    gui::{add_controls, add_gui},
     id::{FILE_MENU_EXIT, FILE_MENU_NEW},
-    util::get_last_error,
+    util::get_non_client_metrics,
+    window::dialog,
 };
 
-/*
-#[derive(thiserror::Error, Debug)]
-enum Error {
-    #[error("windows error: {0}")]
-    WinError(#[from] ::windows::core::Error),
-}
-*/
-
 const WINDOW_CLASS: PCWSTR = w!("myWindowClass");
-
-fn get_instance_name() -> ::windows::core::Result<HSTRING> {
-    let h_instance = unsafe { GetModuleHandleW(None)? };
-
-    let mut sz_file_name = Box::new([0u16; MAX_PATH as usize]);
-    let length = unsafe { GetModuleFileNameW(h_instance, &mut *sz_file_name) };
-
-    if length == 0 {
-        unsafe { get_last_error() }?;
-    }
-
-    let str = unsafe { ::windows::core::PCWSTR::from_raw(sz_file_name.as_ptr()).to_hstring()? };
-
-    println!("{}", str);
-
-    Ok(str)
-}
 
 unsafe extern "system" fn window_proc(
     hwnd: HWND,
@@ -73,12 +53,23 @@ unsafe extern "system" fn window_proc(
             _ => (),
         },
         WM_CREATE => {
-            add_gui(hwnd);
+            add_menus(hwnd).unwrap();
         }
         _ => return DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 
     return windows::Win32::Foundation::LRESULT(0);
+}
+
+unsafe extern "system" fn enum_child_proc(h_wnd: HWND, lparam: LPARAM) -> BOOL {
+    let hf_default: HFONT = HFONT(lparam.0);
+    SendMessageW(
+        h_wnd,
+        WM_SETFONT,
+        WPARAM(hf_default.0 as usize),
+        LPARAM(TRUE.0 as isize),
+    );
+    return TRUE;
 }
 
 pub unsafe fn win_main(
@@ -87,6 +78,14 @@ pub unsafe fn win_main(
     _p_cmd_line: PCWSTR,
     n_cmd_show: u32,
 ) {
+    /* 0. Initialize common controls */
+    InitCommonControlsEx(&INITCOMMONCONTROLSEX {
+        dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+        dwICC: ICC_STANDARD_CLASSES,
+        ..Default::default()
+    })
+    .unwrap();
+
     /* 1. Register classes */
     let wc = WNDCLASSEXW {
         cbSize: std::mem::size_of::<WNDCLASSEXW>() as u32,
@@ -127,7 +126,7 @@ pub unsafe fn win_main(
         WS_EX_WINDOWEDGE, // WS_EX_CLIENTEDGE
         WINDOW_CLASS,
         w!("Window Title"),
-        WS_OVERLAPPEDWINDOW,
+        WINDOW_STYLE(WS_OVERLAPPEDWINDOW.0 ^ WS_THICKFRAME.0),
         CW_USEDEFAULT,
         CW_USEDEFAULT,
         800,
@@ -138,11 +137,22 @@ pub unsafe fn win_main(
         None,
     );
 
+    // Retrieve the default font
+    let ncmetrics = get_non_client_metrics();
+    let hf_default = CreateFontIndirectW(&ncmetrics.lfMessageFont);
+    println!(
+        "Default font: {}",
+        HSTRING::from_wide(&ncmetrics.lfMessageFont.lfFaceName).unwrap()
+    );
+
     println!("Showing window");
     dbg!(n_cmd_show);
     let _ = ShowWindow(
         hwnd, SW_SHOW, //windows::Win32::UI::WindowsAndMessaging::SHOW_WINDOW_CMD(n_cmd_show),
     );
+
+    let _ = EnumChildWindows(hwnd, Some(enum_child_proc), LPARAM(hf_default.0));
+
     println!("Updating window");
     let _ = UpdateWindow(hwnd);
 
@@ -156,4 +166,26 @@ pub unsafe fn win_main(
     }
 
     println!("Exiting");
+
+    DeleteObject(hf_default).unwrap();
+}
+
+pub unsafe fn add_menus(hwnd: HWND) -> ::windows::core::Result<()> {
+    let h_menu = CreateMenu()?;
+
+    let h_file_menu = CreateMenu()?;
+
+    AppendMenuW(
+        h_file_menu,
+        MF_STRING,
+        FILE_MENU_NEW as usize,
+        w!("Attach to program"),
+    )?;
+    AppendMenuW(h_file_menu, MF_STRING, FILE_MENU_EXIT as usize, w!("Exit"))?;
+
+    AppendMenuW(h_menu, MF_POPUP, h_file_menu.0 as usize, w!("File"))?;
+
+    SetMenu(hwnd, h_menu)?;
+
+    Ok(())
 }

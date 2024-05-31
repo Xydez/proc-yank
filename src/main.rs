@@ -7,11 +7,9 @@ use windows::Win32::{
     },
 };
 
-mod dialog;
-mod gui;
 mod id;
 mod util;
-mod win_main;
+mod window;
 
 fn main() {
     let h_instance = unsafe { GetModuleHandleW(None).unwrap() };
@@ -25,7 +23,7 @@ fn main() {
     let command_line = unsafe { GetCommandLineW() };
 
     unsafe {
-        win_main::win_main(
+        window::win_main::win_main(
             h_instance,
             HMODULE::default(),
             command_line,
