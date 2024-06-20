@@ -1,17 +1,46 @@
+use std::{ffi::OsString, str::FromStr};
+
 use windows::{
     core::HSTRING,
     Win32::{
-        Foundation::{ERROR_SUCCESS, HANDLE, MAX_PATH, SIZE},
-        Graphics::Gdi::{CreateFontIndirectW, DeleteObject, GetTextExtentPoint32W, HDC, HFONT},
+        Foundation::{GetLastError, ERROR_SUCCESS, HANDLE, HWND, MAX_PATH, RECT, SIZE},
+        Graphics::Gdi::{
+            CreateFontIndirectW, DeleteObject, GetTextExtentPoint32W, HDC, HFONT, HGDIOBJ,
+        },
         UI::WindowsAndMessaging::{
-            SystemParametersInfoW, NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS,
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
+            GetClientRect, MessageBoxW, SystemParametersInfoW, MB_ICONEXCLAMATION, MB_OK,
+            NONCLIENTMETRICSW, SPI_GETNONCLIENTMETRICS, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS,
         },
     },
 };
 
-pub unsafe fn get_last_error() -> ::windows::core::Result<()> {
-    let error = ::windows::core::Error::from_win32();
+// Probably garbage code
+#[derive(Debug)]
+pub struct GdiHandle<T: windows::core::Param<HGDIOBJ> + Clone> {
+    handle: T,
+}
+
+impl<T: windows::core::Param<HGDIOBJ> + Clone> GdiHandle<T> {
+    #[allow(dead_code)]
+    pub fn new(handle: T) -> GdiHandle<T> {
+        GdiHandle { handle }
+    }
+
+    #[allow(dead_code)]
+    pub fn inner(&self) -> &T {
+        &self.handle
+    }
+}
+
+impl<T: windows::core::Param<HGDIOBJ> + Clone> Drop for GdiHandle<T> {
+    fn drop(&mut self) {
+        unsafe { DeleteObject(self.handle.clone()).expect("handle should live") }
+    }
+}
+
+pub fn get_last_error() -> ::windows::core::Result<()> {
+    let error: windows::core::Error =
+        windows::core::HRESULT::from_win32(unsafe { GetLastError().0 }).into();
 
     if error.code() == ERROR_SUCCESS.into() {
         Ok(())
@@ -20,20 +49,62 @@ pub unsafe fn get_last_error() -> ::windows::core::Result<()> {
     }
 }
 
-pub unsafe fn check_handle<T>(n: T) -> ::windows::core::Result<T>
+pub fn check_handle<T>(n: T) -> ::windows::core::Result<T>
 where
     T: Into<HANDLE> + Copy,
 {
     {
         let n: HANDLE = n.into();
         if n.is_invalid() {
-            get_last_error()?;
+            return Err(get_last_error()
+                .err()
+                .unwrap_or(windows::core::Error::empty()));
         }
     }
 
     Ok(n)
 }
 
+/// Catches errors and creates a message box before panicking
+pub unsafe fn catch<T>(return_value: windows::core::Result<T>) -> T {
+    match return_value {
+        Ok(value) => value,
+        Err(error) => {
+            MessageBoxW(
+                None,
+                &string_to_hstring(format!("Error {}", error.code())).unwrap(),
+                &string_to_hstring(format!("Error {}: {}", error.code(), error.message())).unwrap(), // w!("Error"),
+                MB_ICONEXCLAMATION | MB_OK,
+            );
+
+            panic!("A Windows error occurred: {}", error);
+        }
+    }
+}
+
+pub fn string_to_hstring(string: impl AsRef<str>) -> windows::core::Result<HSTRING> {
+    use std::os::windows::ffi::OsStrExt;
+
+    HSTRING::from_wide(
+        &OsString::from_str(string.as_ref())
+            .expect("method is infallible")
+            .encode_wide()
+            .collect::<Vec<_>>(),
+    )
+}
+
+pub unsafe fn check_error_code<T>(return_value: T, error: T) -> windows::core::Result<T>
+where
+    T: PartialEq,
+{
+    if return_value == error {
+        get_last_error()?;
+    }
+
+    Ok(return_value)
+}
+
+#[allow(dead_code)]
 pub unsafe fn get_non_client_metrics() -> NONCLIENTMETRICSW {
     let mut ncmetrics = NONCLIENTMETRICSW {
         cbSize: std::mem::size_of::<NONCLIENTMETRICSW>() as u32,
@@ -65,12 +136,14 @@ impl Drop for FontWrapper {
     }
 }
 
+#[allow(dead_code)]
 pub fn get_default_font() -> FontWrapper {
     let ncmetrics = unsafe { get_non_client_metrics() };
 
     FontWrapper(unsafe { CreateFontIndirectW(&ncmetrics.lfMessageFont) })
 }
 
+#[allow(dead_code)]
 pub fn get_instance_name() -> ::windows::core::Result<HSTRING> {
     use windows::Win32::System::LibraryLoader::{GetModuleFileNameW, GetModuleHandleW};
 
@@ -80,7 +153,7 @@ pub fn get_instance_name() -> ::windows::core::Result<HSTRING> {
     let length = unsafe { GetModuleFileNameW(h_instance, &mut *sz_file_name) };
 
     if length == 0 {
-        unsafe { get_last_error() }?;
+        get_last_error()?;
     }
 
     let str = unsafe { ::windows::core::PCWSTR::from_raw(sz_file_name.as_ptr()).to_hstring()? };
@@ -90,20 +163,22 @@ pub fn get_instance_name() -> ::windows::core::Result<HSTRING> {
     Ok(str)
 }
 
+/// Retrieves the lower WORD (16 bits) of a DWORD (32 bits)
 pub fn loword(l: u32) -> u16 {
     (l & 0xffff) as u16
 }
 
+/// Retrieves the higher WORD (16 bits) of a DWORD (32 bits)
 pub fn hiword(l: u32) -> u16 {
     ((l >> 16) & 0xffff) as u16
 }
 
 /// Get the size of a piece of text. This does not take neither wrap nor
 /// newlines into accounnt, for that please see [get_text_size_wrap].
-pub unsafe fn get_text_size(hdc: HDC, text: &[u16]) -> SIZE {
+pub fn get_text_size(hdc: HDC, text: &[u16]) -> SIZE {
     let mut size = SIZE::default();
 
-    GetTextExtentPoint32W(hdc, text, &mut size).unwrap();
+    unsafe { GetTextExtentPoint32W(hdc, text, &mut size) }.unwrap();
 
     size
 }
@@ -114,12 +189,7 @@ pub unsafe fn get_text_size(hdc: HDC, text: &[u16]) -> SIZE {
 ///
 /// Returns the rows and their respective size. This does not take newlines into
 /// account, see [get_text_size_wrap].
-unsafe fn wrap_text_by(
-    hdc: HDC,
-    width_bound: i32,
-    text: &[u16],
-    delim: u16,
-) -> Vec<(Vec<u16>, SIZE)> {
+fn wrap_text_by(hdc: HDC, width_bound: i32, text: &[u16], delim: u16) -> Vec<(Vec<u16>, SIZE)> {
     let mut rows = Vec::new();
     let mut working_text = text.to_vec();
 
@@ -159,7 +229,7 @@ unsafe fn wrap_text_by(
 /// To have an unlimited x or y axis, set it to -1.
 ///
 /// If the function returns `None`, it means the text did not fit within the bounds.
-pub unsafe fn get_text_size_wrap(hdc: HDC, bounds: SIZE, text: &[u16]) -> Option<SIZE> {
+pub fn get_text_size_wrap(hdc: HDC, bounds: SIZE, text: &[u16]) -> Option<SIZE> {
     let size = get_text_size(hdc, text);
 
     if bounds.cy != -1 && size.cy > bounds.cy {
@@ -172,8 +242,7 @@ pub unsafe fn get_text_size_wrap(hdc: HDC, bounds: SIZE, text: &[u16]) -> Option
     let rows = text
         .to_vec()
         .split(|c| *c == '\n' as u16)
-        .map(|block| wrap_text_by(hdc, bounds.cx, block, ' ' as u16))
-        .flatten()
+        .flat_map(|block| wrap_text_by(hdc, bounds.cx, block, ' ' as u16))
         .collect::<Vec<_>>();
 
     let size = SIZE {
@@ -181,9 +250,18 @@ pub unsafe fn get_text_size_wrap(hdc: HDC, bounds: SIZE, text: &[u16]) -> Option
         cy: rows.iter().map(|(_, size)| size.cy).sum(),
     };
 
-    return if bounds.cy != -1 && size.cy > bounds.cy {
+    if bounds.cy != -1 && size.cy > bounds.cy {
         None
     } else {
         Some(size)
-    };
+    }
+}
+
+#[allow(dead_code)]
+pub fn get_client_rect(hwnd: impl windows::core::Param<HWND>) -> windows::core::Result<RECT> {
+    let mut rect = RECT::default();
+
+    unsafe { GetClientRect(hwnd, &mut rect) }?;
+
+    Ok(rect)
 }
