@@ -6,22 +6,30 @@ use windows::{
         Foundation::{HWND, LPARAM, LRESULT, SIZE, TRUE, WPARAM},
         Graphics::Gdi::{DeleteObject, GetWindowDC, InvalidateRect, COLOR_WINDOW, HBRUSH, HFONT},
         UI::{
+            Controls::{
+                LVCFMT_LEFT, LVCF_FMT, LVCF_SUBITEM, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_IMAGE,
+                LVIF_TEXT, LVITEMW, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
+                LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMW, LVN_GETDISPINFOW, LVN_INSERTITEM,
+                LVS_EX_FULLROWSELECT, LVS_REPORT, NMHDR, NMITEMACTIVATE, NMLVDISPINFOW, NM_CLICK,
+                WC_BUTTONW, WC_EDITW, WC_LISTVIEWW, WC_STATICW,
+            },
             Input::KeyboardAndMouse::EnableWindow,
             WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindow, GetWindowLongPtrW,
                 LoadCursorW, LoadIconW, RegisterClassExW, SendMessageW, SetWindowLongPtrW,
                 SetWindowPos, BS_DEFPUSHBUTTON, CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA,
-                GW_OWNER, HMENU, IDC_ARROW, IDI_APPLICATION, SWP_FRAMECHANGED, WINDOW_EX_STYLE,
-                WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_SETFONT, WM_SIZE,
-                WNDCLASSEXW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
-                WS_VISIBLE,
+                GW_OWNER, HMENU, IDC_ARROW, IDI_APPLICATION, MINMAXINFO, SWP_FRAMECHANGED,
+                WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY,
+                WM_GETMINMAXINFO, WM_NOTIFY, WM_SETFONT, WM_SIZE, WNDCLASSEXW, WS_CHILD,
+                WS_DISABLED, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP, WS_VISIBLE,
             },
         },
     },
 };
 
 use crate::{
-    id::IDC_DIALOG_CANCEL,
+    id::{IDC_DIALOG_CANCEL, IDC_DIALOG_OK},
+    memory::{FileInfoField, Process, ProcessSnapshot},
     string::INFO_TEXT,
     util::{self, get_default_font, get_text_size_wrap},
 };
@@ -36,7 +44,9 @@ pub struct Dialog {
     hwnd: HWND,
     hwnd_text: HWND,
     hwnd_input: HWND,
-    hwnd_button: HWND,
+    hwnd_listview: HWND,
+    hwnd_button_cancel: HWND,
+    hwnd_button_ok: HWND,
     hf_default: HFONT,
 }
 
@@ -74,8 +84,8 @@ impl Dialog {
                 WS_VISIBLE | WS_OVERLAPPEDWINDOW,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                800,
-                300,
+                640,
+                480,
                 app.hwnd,
                 None,
                 app.instance.h_instance,
@@ -104,11 +114,14 @@ impl Dialog {
     //     unimplemented!("Do we really need this?")
     // }
 
+    /// Create all the children within the window
+    ///
+    /// Note: See [apply_size](Self::apply_size) for positioning the children
     fn create_window(instance: Arc<Instance>, hwnd: HWND) -> ::windows::core::Result<Dialog> {
         let hwnd_text = util::check_handle(unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
-                w!("STATIC"),
+                WC_STATICW,
                 INFO_TEXT,
                 WS_VISIBLE | WS_CHILD,
                 CW_USEDEFAULT,
@@ -127,8 +140,8 @@ impl Dialog {
         let hwnd_input = util::check_handle(unsafe {
             CreateWindowExW(
                 WS_EX_CLIENTEDGE,
-                w!("EDIT"),
-                w!(""),
+                WC_EDITW,
+                None,
                 WS_CHILD | WS_VISIBLE,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -142,10 +155,28 @@ impl Dialog {
         })
         .unwrap();
 
-        let hwnd_button = util::check_handle(unsafe {
+        let hwnd_listview = util::check_handle(unsafe {
+            CreateWindowExW(
+                WS_EX_CLIENTEDGE,
+                WC_LISTVIEWW,
+                None,
+                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(LVS_REPORT), // | LVS_EDITLABELS | LVS_AUTOARRANGE | /* todo: remove? */ LVS_OWNERDATA
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                hwnd,
+                HMENU(crate::id::ID_LISTVIEW as isize), // TODO: Isn't this for dialogs?
+                instance.h_instance,
+                None,
+            )
+        })
+        .unwrap();
+
+        let hwnd_button_cancel = util::check_handle(unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
-                w!("BUTTON"),
+                WC_BUTTONW,
                 w!("Cancel"),
                 WS_TABSTOP | WS_VISIBLE | WS_CHILD | WINDOW_STYLE(BS_DEFPUSHBUTTON as u32),
                 CW_USEDEFAULT,
@@ -160,9 +191,37 @@ impl Dialog {
         })
         .unwrap();
 
+        let hwnd_button_ok = util::check_handle(unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(0),
+                WC_BUTTONW,
+                w!("Ok"),
+                WS_TABSTOP
+                    | WS_VISIBLE
+                    | WS_CHILD
+                    | WS_DISABLED
+                    | WINDOW_STYLE(BS_DEFPUSHBUTTON as u32),
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                hwnd,
+                HMENU(IDC_DIALOG_OK as isize),
+                instance.h_instance,
+                None,
+            )
+        })
+        .unwrap();
+
         let hf_default = get_default_font();
 
-        for handle in [hwnd, hwnd_text, hwnd_input, hwnd_button] {
+        for handle in [
+            hwnd,
+            hwnd_text,
+            hwnd_input,
+            hwnd_button_cancel,
+            hwnd_button_ok,
+        ] {
             unsafe {
                 SendMessageW(
                     handle,
@@ -179,7 +238,9 @@ impl Dialog {
             hwnd,
             hwnd_text,
             hwnd_input,
-            hwnd_button,
+            hwnd_listview,
+            hwnd_button_cancel,
+            hwnd_button_ok,
             hf_default,
         };
 
@@ -192,7 +253,12 @@ impl Dialog {
     }
 
     fn apply_size(&self, sz_wnd: SIZE) {
+        // See: https://learn.microsoft.com/en-us/windows/win32/uxguide/vis-layout#recommended-sizing-and-spacing
         const BORDER_MARGIN: i32 = 10;
+        const SPACER: i32 = 6;
+        const INPUT_HEIGHT: i32 = 24;
+        const BUTTON_WIDTH: i32 = 100;
+        const BUTTON_HEIGHT: i32 = 30;
 
         // Calculate text
         let hdc = unsafe { GetWindowDC(self.hwnd_text) };
@@ -229,8 +295,8 @@ impl Dialog {
         }
         .unwrap();
 
-        let y = y + h + 6;
-        let h = 24;
+        let y = y + h + SPACER;
+        let h = INPUT_HEIGHT;
 
         unsafe {
             SetWindowPos(
@@ -245,15 +311,44 @@ impl Dialog {
         }
         .unwrap();
 
-        /* BOTTOM */
-        let w = 100;
-        let h = 30;
+        let y = y + h + SPACER;
+        let h = sz_wnd.cy - y - BORDER_MARGIN - SPACER - BUTTON_HEIGHT;
 
         unsafe {
             SetWindowPos(
-                self.hwnd_button,
+                self.hwnd_listview,
+                None,
+                BORDER_MARGIN,
+                y,
+                sz_wnd.cx - 2 * BORDER_MARGIN,
+                h,
+                SWP_FRAMECHANGED,
+            )
+        }
+        .unwrap();
+
+        /* BOTTOM */
+        let w = BUTTON_WIDTH;
+        let h = BUTTON_HEIGHT;
+
+        unsafe {
+            SetWindowPos(
+                self.hwnd_button_cancel,
                 None,
                 sz_wnd.cx - w - BORDER_MARGIN,
+                sz_wnd.cy - h - BORDER_MARGIN,
+                w,
+                h,
+                SWP_FRAMECHANGED,
+            )
+        }
+        .unwrap();
+
+        unsafe {
+            SetWindowPos(
+                self.hwnd_button_ok,
+                None,
+                sz_wnd.cx - w - BORDER_MARGIN - BUTTON_WIDTH - SPACER,
                 sz_wnd.cy - h - BORDER_MARGIN,
                 w,
                 h,
@@ -280,6 +375,12 @@ impl Dialog {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
+        // if msg == WM_NOTIFY {
+        //     println!("WM_NOTIFY code = {}", unsafe {
+        //         (&*(lparam.0 as *const NMHDR)).code
+        //     });
+        // }
+
         match msg {
             WM_CREATE => {
                 /* Create the window */
@@ -289,18 +390,173 @@ impl Dialog {
                 let instance =
                     unsafe { Arc::from_raw(create_params.lpCreateParams as *const Instance) };
 
-                // Create the window and set the pointer
+                // Create the window
                 let dialog =
                     Arc::new(Self::create_window(instance, hwnd).expect("Failed to create window"));
-
-                unsafe {
-                    // We need to make it a Arc<Dialog> to make it stay on the heap until WM_DESTROY
-                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, Arc::into_raw(dialog) as isize);
-                }
 
                 // Disable the parent
                 unsafe {
                     let _ = EnableWindow(create_params.hwndParent, false);
+                }
+
+                // Initialize the list
+                unsafe {
+                    SendMessageW(
+                        dialog.hwnd_listview,
+                        LVM_SETEXTENDEDLISTVIEWSTYLE,
+                        WPARAM(0),
+                        LPARAM(LVS_EX_FULLROWSELECT as isize),
+                    );
+                }
+
+                // Initialize columns
+                let lvcol_base = LVCOLUMNW {
+                    mask: LVCF_FMT | LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM,
+                    //pszText: ::windows::core::PWSTR(w!("Item").0 as *mut u16),
+                    cx: 128,
+                    fmt: LVCFMT_LEFT,
+                    ..Default::default()
+                };
+
+                const COLUMNS: [PCWSTR; 4] =
+                    [w!("Icon"), w!("PID"), w!("Executable"), w!("Description")];
+
+                unsafe {
+                    for (i, str) in COLUMNS.iter().enumerate() {
+                        let lvcol = LVCOLUMNW {
+                            pszText: ::windows::core::PWSTR(str.0 as *mut u16),
+                            //cx: // TODO: Calculate text width
+                            //iOrder: i as i32,
+                            ..lvcol_base
+                        };
+
+                        SendMessageW(
+                            dialog.hwnd_listview,
+                            LVM_INSERTCOLUMNW,
+                            WPARAM(i),
+                            LPARAM(std::ptr::addr_of!(lvcol) as isize),
+                        );
+                    }
+                }
+
+                let begin = std::time::Instant::now();
+                for (i, process) in ProcessSnapshot::new().unwrap().enumerate() {
+                    // FIXME: SUPER DANGEROUS BAD BAD MBY?
+                    let proc_exe = Box::into_raw(Box::new(process.process_name_buf()));
+                    let proc_id =
+                        util::string_to_hstring(format!("{}", process.process_id())).unwrap();
+
+                    let (proc_hicon, proc_desc, proc_name) =
+                        if let Ok(proc) = Process::__tmp_open_ro(process.process_id()) {
+                            let hicon = proc.icon().unwrap();
+
+                            if let Ok(descs) = proc.file_descriptions() {
+                                let proc_name = descs
+                                    .iter()
+                                    .map(|desc| desc.get_string(FileInfoField::ProductName))
+                                    .next()
+                                    .transpose()
+                                    .unwrap()
+                                    .flatten();
+
+                                let proc_desc = descs
+                                    .iter()
+                                    .map(|desc| desc.get_string(FileInfoField::FileDescription))
+                                    .next()
+                                    .transpose()
+                                    .unwrap()
+                                    .flatten();
+
+                                (hicon, proc_name, proc_desc)
+                            } else {
+                                (hicon, None, None)
+                            }
+                        } else {
+                            // println!("Failed to open {}", process.process_id());
+
+                            (None, None, None)
+                        };
+                    //process.process_descriptions().unwrap();
+
+                    let lvitem = LVITEMW {
+                        mask: LVIF_TEXT, // | LVIF_STATE,
+                        iItem: i as i32,
+                        //pszText: windows::core::PWSTR(proc_name as *mut u16),
+                        //pszText: LPSTR_TEXTCALLBACKW,
+                        ..Default::default()
+                    };
+
+                    unsafe {
+                        SendMessageW(
+                            dialog.hwnd_listview,
+                            LVM_INSERTITEMW,
+                            WPARAM(0),
+                            LPARAM(std::ptr::addr_of!(lvitem) as isize),
+                        );
+                    }
+
+                    for j in 1..COLUMNS.len() {
+                        let item = LVITEMW {
+                            iItem: i as i32,
+                            iSubItem: j as i32,
+                            ..Default::default()
+                        };
+                        let lvsubitem = match j {
+                            0 => LVITEMW {
+                                mask: LVIF_TEXT | LVIF_IMAGE,
+                                // TODO: How do we set the image correctly? Maybe it has something to do with the callback thing?
+                                iImage: proc_hicon.map(|hicon| hicon.0).unwrap_or(0) as i32,
+                                ..item
+                            },
+                            1 => LVITEMW {
+                                mask: LVIF_TEXT,
+                                pszText: windows::core::PWSTR(
+                                    proc_id.as_wide().as_ptr() as *mut u16
+                                ),
+                                ..item
+                            },
+                            2 => LVITEMW {
+                                mask: LVIF_TEXT,
+                                pszText: windows::core::PWSTR(
+                                    proc_name
+                                        .as_ref()
+                                        .map(|val| val.as_ptr() as *mut u16)
+                                        .unwrap_or(proc_exe as *mut u16),
+                                ),
+                                ..item
+                            },
+                            3 => LVITEMW {
+                                mask: LVIF_TEXT,
+                                pszText: proc_desc
+                                    .as_ref()
+                                    .map(|val| windows::core::PWSTR(val.as_ptr() as *mut u16))
+                                    .unwrap_or(item.pszText),
+                                ..item
+                            },
+                            _ => item,
+                        };
+
+                        unsafe {
+                            SendMessageW(
+                                dialog.hwnd_listview,
+                                LVM_SETITEMW,
+                                WPARAM(0),
+                                LPARAM(std::ptr::addr_of!(lvsubitem) as isize),
+                            );
+                        }
+                    }
+                }
+
+                let dur = std::time::Instant::now() - begin;
+
+                println!("Scanned applications in {:.2}s", dur.as_secs_f64());
+
+                //unsafe { util::listview::insert_item(dialog.hwnd_listview, &lvitem) }.unwrap();
+
+                // Set the pointer
+                unsafe {
+                    // We need to make it a Arc<Dialog> to make it stay on the heap until WM_DESTROY
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, Arc::into_raw(dialog) as isize);
                 }
             }
             WM_CLOSE => {
@@ -355,17 +611,61 @@ impl Dialog {
 
                 unsafe { InvalidateRect(hwnd, None, false) }.unwrap();
             }
-            WM_COMMAND =>
-            {
-                #[allow(clippy::single_match)]
-                match util::loword(wparam.0 as u32) {
-                    IDC_DIALOG_CANCEL => unsafe { Self::destroy(hwnd) },
-                    _ => (),
-                }
+            WM_GETMINMAXINFO => {
+                // For some reason the exact dimensions are not obeyed, so we need to add some extra
+                const X_EXTRA: i32 = 20;
+                const Y_EXTRA: i32 = 43;
+
+                let min_max_info = unsafe { &mut *(lparam.0 as *mut MINMAXINFO) };
+
+                min_max_info.ptMinTrackSize.x = 250 + X_EXTRA;
+                min_max_info.ptMinTrackSize.y = 200 + Y_EXTRA;
             }
+            WM_NOTIFY => match unsafe { (*(lparam.0 as *const NMHDR)).code } {
+                LVN_INSERTITEM => {
+                    //println!("LVN_INSERTITEM");
+                }
+                LVN_GETDISPINFOW => {
+                    let disp_info = unsafe { &mut *(lparam.0 as *mut NMLVDISPINFOW) };
+
+                    // FIXME: Please don't pretend like it is mut here, do it properly:
+                    disp_info.item.pszText =
+                        ::windows::core::PWSTR(w!("Hello, world!").0 as *mut u16);
+                }
+                NM_CLICK => {
+                    let info = unsafe { &mut *(lparam.0 as *mut NMITEMACTIVATE) };
+
+                    let self_ = unsafe { &*Self::retrieve_self(hwnd).unwrap() };
+
+                    unsafe {
+                        let _ = EnableWindow(self_.hwnd_button_ok, info.iItem != -1);
+                    }
+
+                    println!("NM_CLICK item = {}", info.iItem);
+                }
+                //_ => (),
+                _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
+            },
+            WM_COMMAND => match util::loword(wparam.0 as u32) {
+                IDC_DIALOG_OK => {
+                    todo!("Item selected.");
+                }
+                IDC_DIALOG_CANCEL => unsafe { Self::destroy(hwnd) },
+                _ => (),
+            },
             _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
         }
 
         LRESULT(0)
+    }
+
+    fn retrieve_self(hwnd: HWND) -> Option<*const Dialog> {
+        let ptr = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Dialog };
+
+        if ptr.is_null() {
+            None
+        } else {
+            Some(ptr)
+        }
     }
 }

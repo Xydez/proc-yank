@@ -7,7 +7,9 @@ use windows::Win32::{
     },
 };
 
+mod def;
 mod id;
+mod memory;
 mod string;
 mod util;
 mod window;

@@ -6,6 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+bytemuck = { version = "1.16.1", features = ["derive"] }
 thiserror = "1.0.61"
 
 [dependencies.windows]
@@ -19,7 +20,13 @@ features = [
 	"Win32_System_LibraryLoader",
 	"Win32_System_Threading",
 	"Win32_System_Environment",
-	"Win32_Globalization"
+	"Win32_Globalization",
+	# Memory diagnostics
+	"Win32_System_Diagnostics_ToolHelp",
+	"Win32_System_Diagnostics_Debug",
+	# Executable info
+	"Win32_Storage_FileSystem",
+	"Win32_UI_Shell"
 ]
 
 [build-dependencies]

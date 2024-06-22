@@ -10,3 +10,6 @@ pub const IDM_ATTACH: u16 = 1;
 pub const IDM_EXIT: u16 = 2;
 
 pub const IDC_DIALOG_CANCEL: u16 = 3;
+pub const IDC_DIALOG_OK: u16 = 4;
+
+pub const ID_LISTVIEW: u16 = 2000;

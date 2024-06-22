@@ -5,7 +5,10 @@ use windows::{
     Win32::{
         Foundation::{HINSTANCE, HMODULE},
         UI::{
-            Controls::{InitCommonControlsEx, ICC_STANDARD_CLASSES, INITCOMMONCONTROLSEX},
+            Controls::{
+                InitCommonControlsEx, ICC_LISTVIEW_CLASSES, ICC_STANDARD_CLASSES,
+                INITCOMMONCONTROLSEX,
+            },
             WindowsAndMessaging::SW_SHOW,
         },
     },
@@ -49,7 +52,7 @@ pub unsafe fn win_main(
     // 1. Initialize common controls
     InitCommonControlsEx(&INITCOMMONCONTROLSEX {
         dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-        dwICC: ICC_STANDARD_CLASSES,
+        dwICC: ICC_STANDARD_CLASSES | ICC_LISTVIEW_CLASSES,
     })
     .unwrap();
 

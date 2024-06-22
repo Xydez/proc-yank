@@ -4,3 +4,9 @@ TODO: Vi borde nog använda Rc istället för Arc eftersom WndProc kör synkront
 
 TODO: Vad är detta?:
 https://learn.microsoft.com/en-us/windows/win32/winmsg/using-the-multiple-document-interface
+
+TODO: Windows UX guide:
+https://learn.microsoft.com/en-us/windows/win32/uxguide/vis-layout
+
+TODO: Standard recommended control sizes:
+https://learn.microsoft.com/en-us/windows/win32/uxguide/vis-layout#recommended-sizing-and-spacing

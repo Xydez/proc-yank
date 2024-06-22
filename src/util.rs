@@ -294,3 +294,49 @@ pub fn get_client_rect(hwnd: impl windows::core::Param<HWND>) -> windows::core::
 
     Ok(rect)
 }
+
+pub mod listview {
+    use windows::Win32::{
+        Foundation::{HWND, LPARAM, WPARAM},
+        UI::{
+            Controls::{LVITEMW, LVM_GETNEXTITEM, LVM_INSERTITEMW, LVNI_FOCUSED},
+            WindowsAndMessaging::SendMessageW,
+        },
+    };
+
+    /// You cannot use LVM_INSERTITEM to insert subitems. The iSubItem member of the LVITEM structure must be zero. See LVM_SETITEM for information on setting subitems.
+    /// Use the iItem member to specify the zero-based index at which the new item should be inserted.
+    #[allow(dead_code)]
+    pub unsafe fn insert_item(hwnd: HWND, item: &LVITEMW) -> ::windows::core::Result<()> {
+        let ret = super::check(|| {
+            SendMessageW(
+                hwnd,
+                LVM_INSERTITEMW,
+                WPARAM(0),
+                LPARAM(std::ptr::addr_of!(item) as isize),
+            )
+        })?;
+
+        println!("util::listview::insert_item ret={}", ret.0);
+
+        assert_ne!(ret.0, -1, "Failed to insert item");
+
+        Ok(())
+    }
+
+    #[allow(dead_code)]
+    pub unsafe fn get_focused_item(hwnd: HWND) -> ::windows::core::Result<isize> {
+        let ret = super::check(|| {
+            SendMessageW(
+                hwnd,
+                LVM_GETNEXTITEM,
+                WPARAM(usize::MAX),
+                LPARAM(LVNI_FOCUSED as isize),
+            )
+        })?;
+
+        assert_ne!(ret.0, -1, "Failed to get item");
+
+        Ok(ret.0)
+    }
+}
