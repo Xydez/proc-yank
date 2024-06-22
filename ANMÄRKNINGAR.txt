@@ -1,5 +1,0 @@
-1. Använd alltid HSTRING när det kommer till strängar
-
-Gör inte misstaget att använda PCWSTR som är en pointer vars data kan gå ur scope.
-
-2. FUCK DENNA FUCKING BULLSHITEN JAG ORKAAR INTEEE

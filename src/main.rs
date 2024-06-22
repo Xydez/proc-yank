@@ -8,6 +8,7 @@ use windows::Win32::{
 };
 
 mod id;
+mod string;
 mod util;
 mod window;
 

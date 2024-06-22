@@ -22,13 +22,14 @@ use crate::{
     util,
 };
 
-use super::win_main::Instance;
+use super::{dialog::Dialog, win_main::Instance};
 
 const WINDOW_CLASS: PCWSTR = w!("myWindowClass");
 
 pub struct App {
     pub instance: Arc<Instance>,
     pub hwnd: HWND,
+    dialog: Option<Arc<Dialog>>,
 }
 
 impl App {
@@ -74,6 +75,7 @@ impl App {
                 None,
                 None,
                 instance.h_instance,
+                // TODO: We might want to send settings and such through `Instance`
                 Some(std::sync::Arc::into_raw(instance) as *const std::ffi::c_void),
             )
         })
@@ -153,18 +155,22 @@ impl App {
                     Arc::new(Self::create_window(instance, hwnd).expect("Failed to create window"));
 
                 unsafe {
-                    // We need to make it a Box<App> to make it stay on the heap until WM_DESTROY
+                    // We need to make it a Arc<App> to make it stay on the heap until WM_DESTROY
                     SetWindowLongPtrW(hwnd, GWLP_USERDATA, Arc::into_raw(app) as isize);
                 }
+
+                println!("app[hwnd]={}", hwnd.0);
             }
             WM_CLOSE => {
                 // An application can prompt the user for confirmation, prior to destroying a window, by processing the WM_CLOSE message and calling the DestroyWindow function only if the user confirms the choice. [source](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-close)
                 unsafe { DestroyWindow(hwnd) }.unwrap();
             }
             WM_DESTROY => {
+                println!("App WM_DESTROY");
+
                 // Drop the arc stored in GWLP_USERDATA. This does not mean that other `Arc`s to the App are dropped.
                 let app =
-                    unsafe { Arc::from_raw(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App) };
+                    unsafe { Arc::from_raw(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const App) };
 
                 unsafe { SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::null::<App>() as isize) };
 
@@ -173,7 +179,24 @@ impl App {
                 unsafe { PostQuitMessage(0) };
             }
             WM_COMMAND => match util::loword(wparam.0 as u32) {
-                IDM_ATTACH => todo!("Implement the attach dialog"),
+                IDM_ATTACH => {
+                    // TODO: Remove mut here(?) use borrow cell thingy
+                    let app = unsafe {
+                        let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut App;
+
+                        assert!(
+                            !ptr.is_null(),
+                            "App pointer should not be null between WM_CREATE and WM_DESTROY"
+                        );
+
+                        &mut *ptr
+                    };
+
+                    let dialog = Dialog::create(app).unwrap();
+
+                    app.dialog = Some(dialog);
+                    // TODO: How do we set dialog to none when it closes???
+                }
                 IDM_EXIT => {
                     unsafe { DestroyWindow(hwnd).unwrap() }
                     // unsafe { PostQuitMessage(0) }
@@ -203,6 +226,10 @@ impl App {
             SetMenu(hwnd, h_menu)?;
         }
 
-        Ok(App { instance, hwnd })
+        Ok(App {
+            instance,
+            hwnd,
+            dialog: None,
+        })
     }
 }

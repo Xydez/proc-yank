@@ -3,7 +3,10 @@ use std::{ffi::OsString, str::FromStr};
 use windows::{
     core::HSTRING,
     Win32::{
-        Foundation::{GetLastError, ERROR_SUCCESS, HANDLE, HWND, MAX_PATH, RECT, SIZE},
+        Foundation::{
+            GetLastError, SetLastError, ERROR_INVALID_WINDOW_HANDLE, ERROR_SUCCESS, HANDLE, HWND,
+            MAX_PATH, RECT, SIZE,
+        },
         Graphics::Gdi::{
             CreateFontIndirectW, DeleteObject, GetTextExtentPoint32W, HDC, HFONT, HGDIOBJ,
         },
@@ -58,7 +61,9 @@ where
         if n.is_invalid() {
             return Err(get_last_error()
                 .err()
-                .unwrap_or(windows::core::Error::empty()));
+                .unwrap_or(windows::core::Error::from_hresult(
+                    ERROR_INVALID_WINDOW_HANDLE.to_hresult(),
+                )));
         }
     }
 
@@ -93,12 +98,31 @@ pub fn string_to_hstring(string: impl AsRef<str>) -> windows::core::Result<HSTRI
     )
 }
 
+pub fn check<F, R>(f: F) -> ::windows::core::Result<R>
+where
+    F: FnOnce() -> R,
+{
+    unsafe {
+        SetLastError(ERROR_SUCCESS);
+    }
+
+    let ret = f();
+
+    let error = unsafe { GetLastError() };
+
+    if error == ERROR_SUCCESS {
+        Ok(ret)
+    } else {
+        Err(::windows::core::Error::from_hresult(error.to_hresult()))
+    }
+}
+
 pub unsafe fn check_error_code<T>(return_value: T, error: T) -> windows::core::Result<T>
 where
     T: PartialEq,
 {
     if return_value == error {
-        get_last_error()?;
+        return Err(get_last_error().unwrap_err());
     }
 
     Ok(return_value)
@@ -136,11 +160,16 @@ impl Drop for FontWrapper {
     }
 }
 
+/// Get the default system font.
+///
+/// Safety: The caller is responsible for calling `DeleteObject(..)`.
 #[allow(dead_code)]
-pub fn get_default_font() -> FontWrapper {
+pub fn get_default_font() -> HFONT {
     let ncmetrics = unsafe { get_non_client_metrics() };
 
-    FontWrapper(unsafe { CreateFontIndirectW(&ncmetrics.lfMessageFont) })
+    // FontWrapper(unsafe {  })
+
+    unsafe { CreateFontIndirectW(&ncmetrics.lfMessageFont) }
 }
 
 #[allow(dead_code)]

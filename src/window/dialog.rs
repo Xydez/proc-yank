@@ -1,39 +1,43 @@
-use std::{cell::OnceCell, pin::Pin};
+use std::sync::Arc;
 
 use windows::{
     core::{w, PCWSTR},
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, SIZE, TRUE, WPARAM},
-        Graphics::Gdi::{GetWindowDC, InvalidateRect, COLOR_WINDOW, HBRUSH},
+        Graphics::Gdi::{DeleteObject, GetWindowDC, InvalidateRect, COLOR_WINDOW, HBRUSH, HFONT},
         UI::{
             Input::KeyboardAndMouse::EnableWindow,
             WindowsAndMessaging::{
-                CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindowLongPtrW, LoadCursorW,
-                LoadIconW, RegisterClassExW, SendMessageW, SetWindowLongPtrW, SetWindowPos,
-                BS_DEFPUSHBUTTON, CW_USEDEFAULT, GWLP_USERDATA, HMENU, IDC_ARROW, IDI_APPLICATION,
-                SWP_FRAMECHANGED, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_SETFONT,
-                WM_SIZE, WNDCLASSEXW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
+                CreateWindowExW, DefWindowProcW, DestroyWindow, GetWindow, GetWindowLongPtrW,
+                LoadCursorW, LoadIconW, RegisterClassExW, SendMessageW, SetWindowLongPtrW,
+                SetWindowPos, BS_DEFPUSHBUTTON, CREATESTRUCTW, CW_USEDEFAULT, GWLP_USERDATA,
+                GW_OWNER, HMENU, IDC_ARROW, IDI_APPLICATION, SWP_FRAMECHANGED, WINDOW_EX_STYLE,
+                WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY, WM_SETFONT, WM_SIZE,
+                WNDCLASSEXW, WS_CHILD, WS_EX_CLIENTEDGE, WS_OVERLAPPEDWINDOW, WS_TABSTOP,
                 WS_VISIBLE,
             },
         },
     },
 };
 
-use crate::util::{self, get_default_font, get_text_size_wrap, FontWrapper};
+use crate::{
+    id::IDC_DIALOG_CANCEL,
+    string::INFO_TEXT,
+    util::{self, get_default_font, get_text_size_wrap},
+};
 
 use super::{app::App, win_main::Instance};
 
 const WINDOW_CLASS: PCWSTR = w!("myDialog001");
 
-const DIALOG_CANCEL: i32 = 1;
-
 #[derive(Debug)]
 pub struct Dialog {
-    pub p_app: *const App,
-    h_dlg: HWND,
-    h_text: HWND,
-    h_input: HWND,
-    h_button: HWND,
+    #[allow(dead_code)]
+    hwnd: HWND,
+    hwnd_text: HWND,
+    hwnd_input: HWND,
+    hwnd_button: HWND,
+    hf_default: HFONT,
 }
 
 impl Dialog {
@@ -59,13 +63,10 @@ impl Dialog {
         unsafe { util::check_error_code(RegisterClassExW(&wc_dialog), 0).unwrap() };
     }
 
-    #[allow(dead_code)]
-    pub fn create(p_app: *const App) -> windows::core::Result<Pin<Box<Self>>> {
-        println!("Dialog::create");
+    pub fn create(app: &App) -> windows::core::Result<Arc<Dialog>> {
+        println!("Dialog::create app.hwnd={}", app.hwnd.0);
 
-        let app = unsafe { p_app.as_ref() }.unwrap();
-
-        let h_dlg = util::check_handle(unsafe {
+        let hwnd = util::check_handle(unsafe {
             CreateWindowExW(
                 WS_EX_CLIENTEDGE,
                 WINDOW_CLASS,
@@ -78,12 +79,33 @@ impl Dialog {
                 app.hwnd,
                 None,
                 app.instance.h_instance,
-                None,
+                Some(Arc::into_raw(Arc::clone(&app.instance)) as *const std::ffi::c_void),
             )
         })
         .unwrap();
 
-        let h_text = util::check_handle(unsafe {
+        let dialog = unsafe {
+            // Clone the Arc in GWLP_USERDATA safely
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Dialog;
+
+            assert!(
+                !ptr.is_null(),
+                "Dialog pointer should not be null between WM_CREATE and WM_DESTROY"
+            );
+
+            Arc::increment_strong_count(ptr);
+            Arc::from_raw(ptr)
+        };
+
+        Ok(dialog)
+    }
+
+    // pub fn show(&self) -> ::windows::core::Result<()> {
+    //     unimplemented!("Do we really need this?")
+    // }
+
+    fn create_window(instance: Arc<Instance>, hwnd: HWND) -> ::windows::core::Result<Dialog> {
+        let hwnd_text = util::check_handle(unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("STATIC"),
@@ -93,16 +115,16 @@ impl Dialog {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                h_dlg,
+                hwnd,
                 None,
-                app.instance.h_instance,
+                instance.h_instance,
                 None,
             )
         })
         .unwrap();
 
         // TODO: 20px height + 2px border
-        let h_input = util::check_handle(unsafe {
+        let hwnd_input = util::check_handle(unsafe {
             CreateWindowExW(
                 WS_EX_CLIENTEDGE,
                 w!("EDIT"),
@@ -112,15 +134,15 @@ impl Dialog {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                h_dlg,
+                hwnd,
                 None,
-                app.instance.h_instance,
+                instance.h_instance,
                 None,
             )
         })
         .unwrap();
 
-        let h_button = util::check_handle(unsafe {
+        let hwnd_button = util::check_handle(unsafe {
             CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("BUTTON"),
@@ -130,37 +152,41 @@ impl Dialog {
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
-                h_dlg,
-                HMENU(DIALOG_CANCEL as isize),
-                app.instance.h_instance,
+                hwnd,
+                HMENU(IDC_DIALOG_CANCEL as isize),
+                instance.h_instance,
                 None,
             )
         })
         .unwrap();
 
-        // Need to pin because we are sending it to the window proc
-        let dialog = Box::pin(Dialog {
-            p_app,
-            h_dlg,
-            h_text,
-            h_input,
-            h_button,
-        });
+        let hf_default = get_default_font();
 
-        // TODO: Somehow move the `Dialog` into the window proc??????
-        // SEE:
-        // - https://stackoverflow.com/questions/4341303/get-the-wndproc-for-windows-handle
-        // - https://stackoverflow.com/questions/21369256/how-to-use-wndproc-as-a-class-function
-        // - https://stackoverflow.com/questions/35178779/wndproc-as-class-method
-        unsafe {
-            SetWindowLongPtrW(
-                h_dlg,
-                GWLP_USERDATA,
-                &*dialog.as_ref() as *const Dialog as isize,
-            );
+        for handle in [hwnd, hwnd_text, hwnd_input, hwnd_button] {
+            unsafe {
+                SendMessageW(
+                    handle,
+                    WM_SETFONT,
+                    WPARAM(hf_default.0 as usize),
+                    LPARAM(TRUE.0 as isize),
+                )
+            };
         }
 
-        dialog.display_dialog();
+        let dlg_rect = util::get_client_rect(hwnd).unwrap();
+
+        let dialog = Dialog {
+            hwnd,
+            hwnd_text,
+            hwnd_input,
+            hwnd_button,
+            hf_default,
+        };
+
+        dialog.apply_size(SIZE {
+            cx: dlg_rect.right - dlg_rect.left,
+            cy: dlg_rect.bottom - dlg_rect.top,
+        });
 
         Ok(dialog)
     }
@@ -169,7 +195,7 @@ impl Dialog {
         const BORDER_MARGIN: i32 = 10;
 
         // Calculate text
-        let hdc = unsafe { GetWindowDC(self.h_text) };
+        let hdc = unsafe { GetWindowDC(self.hwnd_text) };
         if hdc.is_invalid() {
             util::get_last_error().unwrap();
         }
@@ -192,7 +218,7 @@ impl Dialog {
 
         unsafe {
             SetWindowPos(
-                self.h_text,
+                self.hwnd_text,
                 None,
                 BORDER_MARGIN,
                 y,
@@ -208,7 +234,7 @@ impl Dialog {
 
         unsafe {
             SetWindowPos(
-                self.h_input,
+                self.hwnd_input,
                 None,
                 BORDER_MARGIN,
                 y,
@@ -225,7 +251,7 @@ impl Dialog {
 
         unsafe {
             SetWindowPos(
-                self.h_button,
+                self.hwnd_button,
                 None,
                 sz_wnd.cx - w - BORDER_MARGIN,
                 sz_wnd.cy - h - BORDER_MARGIN,
@@ -237,26 +263,90 @@ impl Dialog {
         .unwrap();
     }
 
+    /// The destroy procedure for the window
+    unsafe fn destroy(hwnd: HWND) {
+        // Re-enable the parent
+        // See: https://web.archive.org/web/20100627175601/http://blogs.msdn.com/b/oldnewthing/archive/2004/02/27/81155.aspx
+        let parent = util::check(|| GetWindow(hwnd, GW_OWNER)).unwrap();
+        let _ = util::check(|| EnableWindow(parent, true)).unwrap();
+
+        // Destroy the window
+        DestroyWindow(hwnd).unwrap();
+    }
+
     extern "system" fn window_proc(
         hwnd: HWND,
         msg: u32,
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> LRESULT {
-        let pself = unsafe { GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Dialog };
-        let Some(self_) = (unsafe { pself.as_ref() }) else {
-            println!("WARNING: reference to self (Dialog) is invalid (pself = {pself:p})");
-            return LRESULT(0);
-        };
-
-        //println!("window_proc: pself == {:#?}", &self_);
-
         match msg {
+            WM_CREATE => {
+                /* Create the window */
+                // Retrieve the instance from the CreateWindowEx lpparam
+                let create_params = unsafe { *(lparam.0 as *const CREATESTRUCTW) };
+
+                let instance =
+                    unsafe { Arc::from_raw(create_params.lpCreateParams as *const Instance) };
+
+                // Create the window and set the pointer
+                let dialog =
+                    Arc::new(Self::create_window(instance, hwnd).expect("Failed to create window"));
+
+                unsafe {
+                    // We need to make it a Arc<Dialog> to make it stay on the heap until WM_DESTROY
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, Arc::into_raw(dialog) as isize);
+                }
+
+                // Disable the parent
+                unsafe {
+                    let _ = EnableWindow(create_params.hwndParent, false);
+                }
+            }
+            WM_CLOSE => {
+                unsafe { Self::destroy(hwnd) };
+            }
+            // WM_DESTROY is used to free the allocated memory object associated with the window.
+            WM_DESTROY => {
+                println!("Dialog WM_DESTROY");
+
+                // Retrieve the `Arc`
+                let app = unsafe {
+                    Arc::from_raw(GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Dialog)
+                };
+
+                /* Delete objects */
+                unsafe {
+                    DeleteObject(app.hf_default).unwrap();
+                }
+
+                /* Drop the Arc */
+
+                // Drop the arc stored in GWLP_USERDATA. This does not mean that other `Arc`s to the App are dropped.
+                unsafe {
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, std::ptr::null::<Dialog>() as isize)
+                };
+
+                drop(app);
+
+                // N.B.: Child windows are destroyed after WM_DESTROY but before WM_NCDESTROY
+            }
             WM_SIZE => {
                 let width = util::loword(lparam.0 as u32);
                 let height = util::hiword(lparam.0 as u32);
 
                 println!("WM_SIZE {{ width={width} height={height} }}");
+
+                let self_ = unsafe {
+                    let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const Dialog;
+
+                    assert!(
+                        !ptr.is_null(),
+                        "WM_SIZE cannot be called before WM_CREATE or after WM_DESTROY"
+                    );
+
+                    &*ptr
+                };
 
                 self_.apply_size(SIZE {
                     cx: width as i32,
@@ -265,60 +355,17 @@ impl Dialog {
 
                 unsafe { InvalidateRect(hwnd, None, false) }.unwrap();
             }
-            WM_CLOSE => unsafe { self_.destroy() },
-            WM_COMMAND => match wparam.0 as i32 {
-                DIALOG_CANCEL => unsafe { self_.destroy() },
-                cmd => println!("{cmd}"),
-            },
+            WM_COMMAND =>
+            {
+                #[allow(clippy::single_match)]
+                match util::loword(wparam.0 as u32) {
+                    IDC_DIALOG_CANCEL => unsafe { Self::destroy(hwnd) },
+                    _ => (),
+                }
+            }
             _ => return unsafe { DefWindowProcW(hwnd, msg, wparam, lparam) },
         }
 
         LRESULT(0)
     }
-
-    #[allow(dead_code)]
-    fn display_dialog(&self) {
-        let dlg_rect = util::get_client_rect(self.h_dlg).unwrap();
-
-        HF_DEFAULT.with(|cell_hf_default| {
-            let hf_default = cell_hf_default.get_or_init(get_default_font);
-
-            for handle in [self.h_dlg, self.h_button, self.h_text] {
-                unsafe {
-                    SendMessageW(
-                        handle,
-                        WM_SETFONT,
-                        WPARAM(hf_default.as_ref().0 as usize),
-                        LPARAM(TRUE.0 as isize),
-                    )
-                };
-            }
-        });
-
-        let _ = unsafe { EnableWindow((*self.p_app).hwnd, false) };
-        println!("window disabled");
-
-        self.apply_size(SIZE {
-            cx: dlg_rect.right - dlg_rect.left,
-            cy: dlg_rect.bottom - dlg_rect.top,
-        });
-    }
-
-    unsafe fn destroy(&self) {
-        EnableWindow((*self.p_app).hwnd, true).unwrap();
-        DestroyWindow(self.h_dlg).unwrap();
-    }
 }
-
-impl Drop for Dialog {
-    fn drop(&mut self) {
-        println!("Dialog::drop");
-        unsafe { self.destroy() };
-    }
-}
-
-thread_local! {
-    static HF_DEFAULT: OnceCell<FontWrapper> = OnceCell::new();
-}
-
-const INFO_TEXT: PCWSTR = w!("If you don't see the process you want to attach, try running with admin rights\nYou can also type in the process ID");

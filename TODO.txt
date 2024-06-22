@@ -1,1 +1,6 @@
 TODO: Fixa Dialog2 som fungerar precis som App
+
+TODO: Vi borde nog använda Rc istället för Arc eftersom WndProc kör synkront på samma tråd (ändra i både App och Dialog)
+
+TODO: Vad är detta?:
+https://learn.microsoft.com/en-us/windows/win32/winmsg/using-the-multiple-document-interface
