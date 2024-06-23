@@ -10,3 +10,9 @@ https://learn.microsoft.com/en-us/windows/win32/uxguide/vis-layout
 
 TODO: Standard recommended control sizes:
 https://learn.microsoft.com/en-us/windows/win32/uxguide/vis-layout#recommended-sizing-and-spacing
+
+TODO: How do we snap the edges of the listview columns to the border?
+
+TODO: Destroy all the handles and shit in Dialog from the processes
+
+TODO: If the process failed to open we should display it as "disabled" or greyed out or something

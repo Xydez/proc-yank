@@ -299,18 +299,22 @@ pub mod listview {
     use windows::Win32::{
         Foundation::{HWND, LPARAM, WPARAM},
         UI::{
-            Controls::{LVITEMW, LVM_GETNEXTITEM, LVM_INSERTITEMW, LVNI_FOCUSED},
+            Controls::{
+                HIMAGELIST, LVITEMW, LVM_GETNEXTITEM, LVM_INSERTITEMW, LVM_SETIMAGELIST,
+                LVNI_FOCUSED,
+            },
             WindowsAndMessaging::SendMessageW,
         },
     };
 
     /// You cannot use LVM_INSERTITEM to insert subitems. The iSubItem member of the LVITEM structure must be zero. See LVM_SETITEM for information on setting subitems.
     /// Use the iItem member to specify the zero-based index at which the new item should be inserted.
+    // NOTE: This function is not rly used, but maybe we want to move things here
     #[allow(dead_code)]
-    pub unsafe fn insert_item(hwnd: HWND, item: &LVITEMW) -> ::windows::core::Result<()> {
+    pub unsafe fn insert_item(hwnd_listview: HWND, item: &LVITEMW) -> ::windows::core::Result<()> {
         let ret = super::check(|| {
             SendMessageW(
-                hwnd,
+                hwnd_listview,
                 LVM_INSERTITEMW,
                 WPARAM(0),
                 LPARAM(std::ptr::addr_of!(item) as isize),
@@ -338,5 +342,28 @@ pub mod listview {
         assert_ne!(ret.0, -1, "Failed to get item");
 
         Ok(ret.0)
+    }
+
+    /// Imitates the functionality of [`ListView_SetImageList`](https://learn.microsoft.com/en-us/windows/win32/api/commctrl/nf-commctrl-listview_setimagelist)
+    ///
+    /// `hwnd_listview` must be the handle to the list view, not the parent
+    /// `i_imagelist` can be one of [`LVSIL_NORMAL`](windows::Win32::UI::Controls::LVSIL_NORMAL), [`LVSIL_SMALL`](windows::Win32::UI::Controls::LVSIL_SMALL), [`LVSIL_STATE`](windows::Win32::UI::Controls::LVSIL_STATE) or [`LVSIL_GROUPHEADER`](windows::Win32::UI::Controls::LVSIL_GROUPHEADER)
+    ///
+    /// Returns the handle to the last image list on the listview - this may be null but is not an error
+    pub fn set_image_list(
+        hwnd_listview: HWND,
+        himl: HIMAGELIST,
+        i_imagelist: u32,
+    ) -> windows::core::Result<Option<HIMAGELIST>> {
+        let last_handle = super::check(|| unsafe {
+            SendMessageW(
+                hwnd_listview,
+                LVM_SETIMAGELIST,
+                WPARAM(i_imagelist as usize),
+                LPARAM(himl.0),
+            )
+        })?;
+
+        Ok((last_handle.0 == 0).then_some(HIMAGELIST(last_handle.0)))
     }
 }

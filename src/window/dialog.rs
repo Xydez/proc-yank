@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{collections::HashMap, sync::Arc};
 
 use windows::{
     core::{w, PCWSTR},
@@ -7,11 +7,12 @@ use windows::{
         Graphics::Gdi::{DeleteObject, GetWindowDC, InvalidateRect, COLOR_WINDOW, HBRUSH, HFONT},
         UI::{
             Controls::{
-                LVCFMT_LEFT, LVCF_FMT, LVCF_SUBITEM, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_IMAGE,
-                LVIF_TEXT, LVITEMW, LVM_INSERTCOLUMNW, LVM_INSERTITEMW,
-                LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMW, LVN_GETDISPINFOW, LVN_INSERTITEM,
-                LVS_EX_FULLROWSELECT, LVS_REPORT, NMHDR, NMITEMACTIVATE, NMLVDISPINFOW, NM_CLICK,
-                WC_BUTTONW, WC_EDITW, WC_LISTVIEWW, WC_STATICW,
+                ImageList_Create, ImageList_ReplaceIcon, ILC_COLOR32, LVCFMT_LEFT, LVCF_FMT,
+                LVCF_SUBITEM, LVCF_TEXT, LVCF_WIDTH, LVCOLUMNW, LVIF_IMAGE, LVIF_TEXT, LVITEMW,
+                LVM_INSERTCOLUMNW, LVM_INSERTITEMW, LVM_SETEXTENDEDLISTVIEWSTYLE, LVM_SETITEMW,
+                LVN_GETDISPINFOW, LVN_INSERTITEM, LVSIL_SMALL, LVS_AUTOARRANGE,
+                LVS_EX_FULLROWSELECT, LVS_REPORT, NMHDR, NMITEMACTIVATE, NM_CLICK, WC_BUTTONW,
+                WC_EDITW, WC_LISTVIEWW, WC_STATICW,
             },
             Input::KeyboardAndMouse::EnableWindow,
             WindowsAndMessaging::{
@@ -29,7 +30,7 @@ use windows::{
 
 use crate::{
     id::{IDC_DIALOG_CANCEL, IDC_DIALOG_OK},
-    memory::{FileInfoField, Process, ProcessSnapshot},
+    memory::{FileInfoField, Process, ProcessArchitecture, ProcessSnapshot},
     string::INFO_TEXT,
     util::{self, get_default_font, get_text_size_wrap},
 };
@@ -160,7 +161,11 @@ impl Dialog {
                 WS_EX_CLIENTEDGE,
                 WC_LISTVIEWW,
                 None,
-                WS_CHILD | WS_VISIBLE | WINDOW_STYLE(LVS_REPORT), // | LVS_EDITLABELS | LVS_AUTOARRANGE | /* todo: remove? */ LVS_OWNERDATA
+                WS_CHILD
+                    | WS_VISIBLE
+                    | WINDOW_STYLE(
+                        LVS_REPORT | LVS_AUTOARRANGE, // /* todo: remove? */ LVS_OWNERDATA |
+                    ), // | LVS_EDITLABELS | LVS_AUTOARRANGE
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
                 CW_USEDEFAULT,
@@ -412,24 +417,26 @@ impl Dialog {
                 // Initialize columns
                 let lvcol_base = LVCOLUMNW {
                     mask: LVCF_FMT | LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM,
-                    //pszText: ::windows::core::PWSTR(w!("Item").0 as *mut u16),
-                    cx: 128,
                     fmt: LVCFMT_LEFT,
                     ..Default::default()
                 };
 
-                const COLUMNS: [PCWSTR; 4] =
-                    [w!("Icon"), w!("PID"), w!("Executable"), w!("Description")];
+                const COLUMNS: [(PCWSTR, i32); 4] = [
+                    (w!("Executable"), 192),
+                    (w!("PID"), 64),
+                    (w!("Arch"), 64),
+                    (w!("Description"), 256),
+                ];
 
-                unsafe {
-                    for (i, str) in COLUMNS.iter().enumerate() {
-                        let lvcol = LVCOLUMNW {
-                            pszText: ::windows::core::PWSTR(str.0 as *mut u16),
-                            //cx: // TODO: Calculate text width
-                            //iOrder: i as i32,
-                            ..lvcol_base
-                        };
+                for (i, (str, cx)) in COLUMNS.iter().enumerate() {
+                    let lvcol = LVCOLUMNW {
+                        pszText: ::windows::core::PWSTR(str.0 as *mut u16),
+                        cx: *cx,
+                        ..lvcol_base
+                    };
 
+                    // TODO: Maybe move to util::listview
+                    unsafe {
                         SendMessageW(
                             dialog.hwnd_listview,
                             LVM_INSERTCOLUMNW,
@@ -440,17 +447,22 @@ impl Dialog {
                 }
 
                 let begin = std::time::Instant::now();
-                for (i, process) in ProcessSnapshot::new().unwrap().enumerate() {
-                    // FIXME: SUPER DANGEROUS BAD BAD MBY?
-                    let proc_exe = Box::into_raw(Box::new(process.process_name_buf()));
-                    let proc_id =
-                        util::string_to_hstring(format!("{}", process.process_id())).unwrap();
 
-                    let (proc_hicon, proc_desc, proc_name) =
-                        if let Ok(proc) = Process::__tmp_open_ro(process.process_id()) {
+                let proc_infos = ProcessSnapshot::new()
+                    .unwrap()
+                    .map(|process| {
+                        let proc_exe = process.process_name_buf();
+                        let proc_id =
+                            util::string_to_hstring(format!("{}", process.process_id())).unwrap();
+
+                        let (proc_hicon, proc_desc, proc_name, proc_arch) = if let Ok(proc) =
+                            Process::__tmp_open_ro(process.process_id())
+                        {
                             let hicon = proc.icon().unwrap();
+                            let arch = proc.arch().unwrap();
 
-                            if let Ok(descs) = proc.file_descriptions() {
+                            let (proc_name, proc_desc) = if let Ok(descs) = proc.file_descriptions()
+                            {
                                 let proc_name = descs
                                     .iter()
                                     .map(|desc| desc.get_string(FileInfoField::ProductName))
@@ -467,25 +479,74 @@ impl Dialog {
                                     .unwrap()
                                     .flatten();
 
-                                (hicon, proc_name, proc_desc)
+                                (proc_name, proc_desc)
                             } else {
-                                (hicon, None, None)
-                            }
+                                (None, None)
+                            };
+
+                            (hicon, proc_name, proc_desc, Some(arch))
                         } else {
-                            // println!("Failed to open {}", process.process_id());
+                            println!("Failed to open {}", process.process_id());
 
-                            (None, None, None)
+                            (None, None, None, None)
                         };
-                    //process.process_descriptions().unwrap();
 
+                        (
+                            proc_exe, proc_id, proc_hicon, proc_desc, proc_name, proc_arch,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+
+                let dur = std::time::Instant::now() - begin;
+
+                println!("Scanned applications in {:.2}s", dur.as_secs_f64());
+
+                let icons = proc_infos
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, (_, _, proc_hicon, _, _, _))| {
+                        proc_hicon.as_ref().map(|proc_hicon| (i, proc_hicon))
+                    })
+                    .collect::<Vec<_>>();
+
+                let himl_small = util::check(|| unsafe {
+                    ImageList_Create(16, 16, ILC_COLOR32, icons.len() as i32, 0)
+                })
+                .unwrap();
+
+                let icons = icons
+                    .into_iter()
+                    .map(|(i, &hicon)| unsafe {
+                        let idx_image_list =
+                            util::check(|| ImageList_ReplaceIcon(himl_small, -1, hicon)).unwrap();
+                        assert_ne!(idx_image_list, -1, "Failed to add image to imagelist");
+                        println!("Added image {} to index {idx_image_list}", hicon.0);
+
+                        (i, (idx_image_list, hicon))
+                    })
+                    .collect::<HashMap<_, _>>();
+
+                util::listview::set_image_list(dialog.hwnd_listview, himl_small, LVSIL_SMALL)
+                    .unwrap();
+
+                for (i, (proc_exe, proc_id, _, proc_desc, proc_name, proc_arch)) in
+                    proc_infos.into_iter().enumerate()
+                {
+                    let idx_icon = icons.get(&i).map(|(i, _)| *i);
                     let lvitem = LVITEMW {
-                        mask: LVIF_TEXT, // | LVIF_STATE,
+                        mask: LVIF_TEXT | LVIF_IMAGE,
                         iItem: i as i32,
-                        //pszText: windows::core::PWSTR(proc_name as *mut u16),
-                        //pszText: LPSTR_TEXTCALLBACKW,
+                        iImage: idx_icon.unwrap_or(-1),
+                        pszText: windows::core::PWSTR(
+                            proc_name
+                                .as_ref()
+                                .map(|val| val.as_ptr() as *mut u16)
+                                .unwrap_or(std::ptr::addr_of!(proc_exe) as *mut u16),
+                        ),
                         ..Default::default()
                     };
 
+                    // TODO: Maybe move to util::listview
                     unsafe {
                         SendMessageW(
                             dialog.hwnd_listview,
@@ -502,56 +563,49 @@ impl Dialog {
                             ..Default::default()
                         };
                         let lvsubitem = match j {
-                            0 => LVITEMW {
-                                mask: LVIF_TEXT | LVIF_IMAGE,
-                                // TODO: How do we set the image correctly? Maybe it has something to do with the callback thing?
-                                iImage: proc_hicon.map(|hicon| hicon.0).unwrap_or(0) as i32,
-                                ..item
-                            },
-                            1 => LVITEMW {
+                            1 => Some(LVITEMW {
                                 mask: LVIF_TEXT,
                                 pszText: windows::core::PWSTR(
                                     proc_id.as_wide().as_ptr() as *mut u16
                                 ),
                                 ..item
-                            },
-                            2 => LVITEMW {
+                            }),
+                            2 => Some(LVITEMW {
                                 mask: LVIF_TEXT,
                                 pszText: windows::core::PWSTR(
-                                    proc_name
-                                        .as_ref()
-                                        .map(|val| val.as_ptr() as *mut u16)
-                                        .unwrap_or(proc_exe as *mut u16),
+                                    match proc_arch {
+                                        Some(ProcessArchitecture::X64) => w!("x64"),
+                                        Some(ProcessArchitecture::X86) => w!("x86"),
+                                        None => w!(""),
+                                    }
+                                    .as_ptr() as *mut u16,
                                 ),
                                 ..item
-                            },
-                            3 => LVITEMW {
+                            }),
+                            3 => Some(LVITEMW {
                                 mask: LVIF_TEXT,
                                 pszText: proc_desc
                                     .as_ref()
                                     .map(|val| windows::core::PWSTR(val.as_ptr() as *mut u16))
                                     .unwrap_or(item.pszText),
                                 ..item
-                            },
-                            _ => item,
+                            }),
+                            _ => None,
                         };
 
-                        unsafe {
-                            SendMessageW(
-                                dialog.hwnd_listview,
-                                LVM_SETITEMW,
-                                WPARAM(0),
-                                LPARAM(std::ptr::addr_of!(lvsubitem) as isize),
-                            );
+                        if let Some(lvsubitem) = lvsubitem {
+                            // TODO: Maybe move to util::listview
+                            unsafe {
+                                SendMessageW(
+                                    dialog.hwnd_listview,
+                                    LVM_SETITEMW,
+                                    WPARAM(0),
+                                    LPARAM(std::ptr::addr_of!(lvsubitem) as isize),
+                                );
+                            }
                         }
                     }
                 }
-
-                let dur = std::time::Instant::now() - begin;
-
-                println!("Scanned applications in {:.2}s", dur.as_secs_f64());
-
-                //unsafe { util::listview::insert_item(dialog.hwnd_listview, &lvitem) }.unwrap();
 
                 // Set the pointer
                 unsafe {
@@ -626,11 +680,12 @@ impl Dialog {
                     //println!("LVN_INSERTITEM");
                 }
                 LVN_GETDISPINFOW => {
-                    let disp_info = unsafe { &mut *(lparam.0 as *mut NMLVDISPINFOW) };
+                    // todo!("LVN_GETDISPINFOW should not be called")
+                    // let disp_info = unsafe { &mut *(lparam.0 as *mut NMLVDISPINFOW) };
 
                     // FIXME: Please don't pretend like it is mut here, do it properly:
-                    disp_info.item.pszText =
-                        ::windows::core::PWSTR(w!("Hello, world!").0 as *mut u16);
+                    // disp_info.item.pszText =
+                    //     ::windows::core::PWSTR(w!("Hello, world!").0 as *mut u16);
                 }
                 NM_CLICK => {
                     let info = unsafe { &mut *(lparam.0 as *mut NMITEMACTIVATE) };

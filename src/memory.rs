@@ -7,7 +7,7 @@ use thiserror::Error;
 use windows::{
     core::{w, HSTRING, PCWSTR},
     Win32::{
-        Foundation::{CloseHandle, HANDLE, HINSTANCE},
+        Foundation::{CloseHandle, BOOL, HANDLE},
         Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW},
         System::{
             Diagnostics::{
@@ -17,13 +17,12 @@ use windows::{
                     PROCESSENTRY32W, TH32CS_SNAPMODULE, TH32CS_SNAPPROCESS,
                 },
             },
-            LibraryLoader::GetModuleHandleW,
             Threading::{
-                OpenProcess, QueryFullProcessImageNameW, PROCESS_ALL_ACCESS, PROCESS_NAME_WIN32,
-                PROCESS_QUERY_INFORMATION,
+                IsWow64Process, OpenProcess, QueryFullProcessImageNameW, PROCESS_ALL_ACCESS,
+                PROCESS_NAME_WIN32, PROCESS_QUERY_INFORMATION,
             },
         },
-        UI::{Shell::ExtractIconW, WindowsAndMessaging::HICON},
+        UI::{Shell::ExtractIconExW, WindowsAndMessaging::HICON},
     },
 };
 
@@ -218,6 +217,23 @@ impl Process {
         self.process_id
     }
 
+    pub fn arch(&self) -> windows::core::Result<ProcessArchitecture> {
+        let is_x64 = {
+            let mut is_x64 = BOOL(0);
+            util::check(|| unsafe {
+                IsWow64Process(self.process_handle, std::ptr::addr_of_mut!(is_x64))
+            })??;
+            is_x64
+        };
+
+        let arch = match is_x64.as_bool() {
+            true => ProcessArchitecture::X64,
+            false => ProcessArchitecture::X86,
+        };
+
+        Ok(arch)
+    }
+
     pub fn executable_path(&self) -> Result<windows::core::HSTRING> {
         let mut len: u32 = 1024;
         let mut buffer = vec![0; len as usize];
@@ -235,14 +251,26 @@ impl Process {
     }
 
     /// The caller is responsible for freeing the HICON after use
+    /// Extracts the first 16x16 icon found in a file
     pub fn icon(&self) -> Result<Option<HICON>> {
-        let hicon = unsafe {
-            ExtractIconW(
-                HINSTANCE(GetModuleHandleW(None)?.0),
+        // let hicon = unsafe {
+        //     ExtractIconW(
+        //         HINSTANCE(GetModuleHandleW(None)?.0),
+        //         &self.executable_path()?,
+        //         0,
+        //     )
+        // };
+
+        let mut hicon = HICON::default();
+        unsafe {
+            ExtractIconExW(
                 &self.executable_path()?,
                 0,
-            )
-        };
+                None,
+                Some(std::ptr::addr_of_mut!(hicon)),
+                1,
+            );
+        }
 
         Ok(if hicon.is_invalid() {
             None
@@ -443,6 +471,13 @@ impl FileInfo {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessArchitecture {
+    X64,
+    X86,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileInfoField {
     Comments,
     InternalName,
